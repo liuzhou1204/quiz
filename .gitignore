@@ -1,9 +1,4 @@
 node_modules/
-dist/quiz-data/
-public/quiz-data/
+dist/
 *.bat
-scripts/
-src/
-vite.config.js
-package.json
-package-lock.json
+.vite/
