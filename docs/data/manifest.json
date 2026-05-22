@@ -1,0 +1,16 @@
+{
+  "banks": [
+    {
+      "id": "pm",
+      "name": "项目管理大赛题库",
+      "file": "pm.json",
+      "total": 69
+    },
+    {
+      "id": "pmp",
+      "name": "PMP 题库",
+      "file": "pmp.json",
+      "total": 104
+    }
+  ]
+}
