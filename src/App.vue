@@ -18,11 +18,33 @@
 
     <!-- 正常模式 -->
     <div v-else class="container">
-      <div :class="{ 'normal-mode': currentView !== 'practice', hidden: currentView === 'practice' }">
+      <!-- 顶部导航 -->
+      <div class="top-nav">
+        <button
+          class="nav-btn"
+          :class="{ active: currentPage === 'quiz' }"
+          @click="currentPage = 'quiz'"
+        >题库练习</button>
+        <button
+          class="nav-btn"
+          :class="{ active: currentPage === 'upload' }"
+          @click="currentPage = 'upload'"
+        >+ 创建题库</button>
+      </div>
+
+      <!-- 创建题库页面 -->
+      <UploadPage
+        v-if="currentPage === 'upload'"
+        @go-home="currentPage = 'quiz'"
+        @bank-added="handleBankAdded"
+      />
+
+      <!-- 刷题页面 -->
+      <div v-show="currentPage === 'quiz'" :class="{ 'normal-mode': currentView !== 'practice', hidden: currentView === 'practice' }">
         <!-- 顶部 Header -->
         <div class="header">
           <h1>
-            📚 项目管理题库 <span style="font-size: 12px; color: #999; font-weight: 400;">H5</span>
+            DocQuiz <span style="font-size: 12px; color: #999; font-weight: 400;">文档变题库</span>
           </h1>
 
           <!-- 题库切换 -->
@@ -162,6 +184,7 @@
           @next="nextPracticeQuestion"
         />
       </div>
+      <!-- end quiz page -->
     </div>
   </div>
 </template>
@@ -171,6 +194,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { isWeChatBrowser } from './utils/helpers.js'
 import { checkAnswer } from './utils/answerParser.js'
 import { loadManifest, loadQuizBank } from './utils/quizLoader.js'
+import { listBanks, loadBank } from './composables/useBankStorage.js'
 import BankTabs from './components/BankTabs.vue'
 import QuestionCard from './components/QuestionCard.vue'
 import QuestionTypeTabs from './components/QuestionTypeTabs.vue'
@@ -181,6 +205,7 @@ import WrongBook from './components/WrongBook.vue'
 import HistoryPanel from './components/HistoryPanel.vue'
 import ScoreHistory from './components/ScoreHistory.vue'
 import WeChatGuide from './components/WeChatGuide.vue'
+import UploadPage from './components/UploadPage.vue'
 
 // ====== 加载状态 ======
 const loading = ref(true)
@@ -192,6 +217,11 @@ const pmQuestions = ref([])
 const pmpQuestions = ref([])
 const bankList = ref([])
 const bankCounts = ref({})
+const dynamicBanks = ref([])  // IndexedDB 动态题库
+const dynamicBankData = ref({})  // { bankId: questions[] }
+
+// ====== 页面状态 ======
+const currentPage = ref('quiz')
 
 // ====== 状态 ======
 const currentBank = ref('pm')
@@ -211,8 +241,18 @@ const showWeChatGuide = ref(false)
 
 // ====== 计算属性 ======
 const allQuestions = computed(() => {
-  const data = currentBank.value === 'pm' ? pmQuestions.value : pmpQuestions.value
-  return data.map((q, i) => ({ ...q, _originalIndex: i }))
+  if (currentBank.value === 'pm') {
+    return pmQuestions.value.map((q, i) => ({ ...q, _originalIndex: i }))
+  }
+  if (currentBank.value === 'pmp') {
+    return pmpQuestions.value.map((q, i) => ({ ...q, _originalIndex: i }))
+  }
+  // 动态题库
+  const data = dynamicBankData.value[currentBank.value]
+  if (data) {
+    return data.map((q, i) => ({ ...q, _originalIndex: i }))
+  }
+  return []
 })
 
 const filteredQuestions = computed(() => {
@@ -268,9 +308,21 @@ async function loadAllBanks() {
   try {
     loadingText.value = '正在获取题库清单…'
     const manifest = await loadManifest()
-    bankList.value = manifest.banks
+    bankList.value = [...manifest.banks]
+
+    // 加载 IndexedDB 动态题库
+    try {
+      const dynBanks = await listBanks()
+      dynamicBanks.value = dynBanks
+      if (dynBanks.length > 0) {
+        bankList.value = [...bankList.value, ...dynBanks]
+      }
+    } catch (e) {
+      console.warn('加载动态题库失败:', e)
+    }
+
     const counts = {}
-    for (const b of manifest.banks) {
+    for (const b of bankList.value) {
       counts[b.id] = b.total
     }
     bankCounts.value = counts
@@ -303,13 +355,54 @@ async function retryLoad() {
 }
 
 // ====== 方法 ======
-function switchBank(bank) {
+async function switchBank(bank) {
   currentBank.value = bank
   currentIndex.value = 0
   submitted.value = false
   selectedAnswers.value = []
   currentType.value = 'all'
   currentCategory.value = '全部'
+
+  // 如果是动态题库且尚未加载
+  if (dynamicBanks.value.some(b => b.id === bank) && !dynamicBankData.value[bank]) {
+    try {
+      loadingText.value = '正在加载题库…'
+      loading.value = true
+      const data = await loadBank(bank)
+      dynamicBankData.value[bank] = data.questions
+      // 更新计数
+      bankCounts.value[bank] = data.questions.length
+    } catch (e) {
+      console.error('加载动态题库失败:', e)
+    } finally {
+      loading.value = false
+    }
+  }
+}
+
+async function handleBankAdded({ id, name, total }) {
+  // 刷新题库列表
+  try {
+    const dynBanks = await listBanks()
+    dynamicBanks.value = dynBanks
+    bankList.value = bankList.value.filter(b => b.id !== 'pm' && b.id !== 'pmp')
+    bankList.value = [
+      ...bankList.value.filter(b => b.id === 'pm' || b.id === 'pmp'),
+      ...dynBanks,
+    ]
+    // 更新计数
+    const counts = { ...bankCounts.value }
+    for (const b of dynBanks) {
+      counts[b.id] = b.total
+    }
+    bankCounts.value = counts
+    // 切换到新题库
+    currentBank.value = id
+    currentIndex.value = 0
+    currentPage.value = 'quiz'
+  } catch (e) {
+    console.error('刷新题库列表失败:', e)
+  }
 }
 
 function setType(type) {
@@ -557,6 +650,31 @@ onMounted(async () => {
 </script>
 
 <style>
+/* ====== 顶部导航 ====== */
+.top-nav {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  background: #fff;
+  border-bottom: 1px solid #f0f0f0;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.nav-btn {
+  padding: 8px 20px;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  color: #666;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.nav-btn:hover { border-color: #1a6b5a; color: #1a6b5a; }
+.nav-btn.active { background: #1a6b5a; color: #fff; border-color: #1a6b5a; }
+
 /* ====== 加载 / 错误状态（内联到组件确保一定打包） ====== */
 .loading-screen { text-align: center; padding: 80px 20px; color: #666; }
 .loading-spinner { width: 40px; height: 40px; border: 3px solid #e0e0e0; border-top-color: #1976d2; border-radius: 50%; animation: quizSpin 0.8s linear infinite; margin: 0 auto 16px; }
