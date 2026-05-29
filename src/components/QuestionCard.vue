@@ -94,7 +94,17 @@ const correctAnswerDisplay = computed(() => {
     </div>
 
     <!-- Question Text -->
-    <div class="question-text">{{ question.q }}</div>
+    <div v-if="question.bilingual" class="bilingual-section">
+      <div class="bilingual-tag">中英对照</div>
+      <div class="question-text-en">{{ question.stemEn }}</div>
+      <div v-if="question.optionsEn && question.optionsEn.length" class="options-en">
+        <span v-for="opt in question.optionsEn" :key="opt.label" class="opt-en-item">
+          <strong>{{ opt.label }}.</strong> {{ opt.text }}
+        </span>
+      </div>
+      <div class="question-text-cn">{{ question.q }}</div>
+    </div>
+    <div v-else class="question-text">{{ question.q }}</div>
 
     <!-- Single/Multi Options -->
     <div v-if="question.type === 'single' || question.type === 'multi'" class="options">
