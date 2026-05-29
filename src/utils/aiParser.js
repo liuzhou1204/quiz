@@ -114,18 +114,45 @@ export async function parseQuestionsWithAI(text) {
     questions = JSON.parse(jsonStr)
   } catch (e) {
     // 尝试修复常见 JSON 问题后重试
-    const fixed = jsonStr
+    let fixed = jsonStr
       .replace(/,\s*}/g, '}')
       .replace(/,\s*]/g, ']')
+
+    // 如果是被截断的 JSON 数组（以 [ 开头但没有 ] 结尾），尝试补全
+    if (fixed.trim().startsWith('[') && !fixed.trim().endsWith(']')) {
+      // 找到最后一个完整的对象
+      const lastComplete = fixed.lastIndexOf('},')
+      if (lastComplete > 0) {
+        fixed = fixed.slice(0, lastComplete + 1) + ']'
+      }
+    }
+    // 如果是被截断的对象（以 { 开头但没有 } 结尾），尝试补全
+    if (fixed.trim().startsWith('{') && !fixed.trim().endsWith('}')) {
+      const lastBrace = fixed.lastIndexOf('}')
+      if (lastBrace > 0) {
+        fixed = fixed.slice(0, lastBrace + 1)
+      }
+    }
+
     try {
       questions = JSON.parse(fixed)
     } catch (e2) {
-      throw new Error(`AI 返回格式解析失败。原始内容:\n${content.slice(0, 500)}`)
+      // 显示原始错误：是被截断了还是格式错误
+      const isTruncated = content.length >= 4095
+      const hint = isTruncated
+        ? '\n(Hint: AI 返回可能因内容过多被截断，文档太长建议分段处理)'
+        : ''
+      throw new Error(`AI 返回格式解析失败。${hint}\n原始内容:\n${content.slice(0, 500)}`)
     }
   }
 
+  // 处理 AI 返回单个对象（而非数组）的情况
   if (!Array.isArray(questions)) {
-    throw new Error('AI 返回的不是题目数组')
+    if (typeof questions === 'object' && questions.q) {
+      questions = [questions]
+    } else {
+      throw new Error(`AI 返回的不是题目数组 (type=${typeof questions})`)
+    }
   }
 
   // 补充缺失字段
@@ -146,7 +173,7 @@ export async function parseQuestionsWithAI(text) {
  * @param {number} chunkSize - 每段字符数（默认 30000）
  * @returns {Promise<Array>} 合并后的题目数组
  */
-export async function parseQuestionsWithAIBatched(text, chunkSize = 30000) {
+export async function parseQuestionsWithAIBatched(text, chunkSize = 12000) {
   if (text.length <= chunkSize) {
     return parseQuestionsWithAI(text)
   }

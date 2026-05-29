@@ -300,7 +300,7 @@ import { ref, computed } from 'vue'
 import { parseDocxFile, parsePdfFile, parseQuestionsFromLines, parseAnswersFromLines, matchAnswersToQuestions, extractTextFromDocx, parseBilingualLines } from '../utils/docParser.js'
 import { extractTextFromPdf } from '../utils/pdfParser.js'
 import { saveBank as saveToDB, generateBankId } from '../composables/useBankStorage.js'
-import { parseQuestionsWithAI } from '../utils/aiParser.js'
+import { parseQuestionsWithAI, parseQuestionsWithAIBatched } from '../utils/aiParser.js'
 
 const emit = defineEmits(['go-home', 'bank-added'])
 
@@ -392,7 +392,9 @@ async function processFileSingle(file) {
       // AI 识别流程
       const lines = isPdf(file) ? await extractTextFromPdf(file) : await extractTextFromDocx(file)
       const text = lines.join('\n')
-      const aiResult = await parseQuestionsWithAI(text)
+      // 大文本自动分批处理
+      const isLarge = text.length > 15000
+      const aiResult = isLarge ? await parseQuestionsWithAIBatched(text) : await parseQuestionsWithAI(text)
       if (aiResult.length === 0) {
         throw new Error('AI 未检测到题目，请确认文档包含题目内容')
       }
@@ -456,7 +458,9 @@ async function processQuestionsFile(file) {
     if (parserEngine.value === 'ai') {
       // AI 识别流程
       const text = lines.join('\n')
-      const aiResult = await parseQuestionsWithAI(text)
+      // 大文本自动分批处理
+      const isLarge = text.length > 15000
+      const aiResult = isLarge ? await parseQuestionsWithAIBatched(text) : await parseQuestionsWithAI(text)
       if (aiResult.length === 0) {
         throw new Error('AI 未检测到题目，请确认文档包含题目内容')
       }
