@@ -19,6 +19,37 @@
       </button>
     </div>
 
+    <!-- 解析引擎选择 -->
+    <div v-if="!questionsDoc && !parsed" class="engine-selector">
+      <span class="engine-label">解析引擎</span>
+      <button
+        class="engine-btn"
+        :class="{ active: parserEngine === 'rule' }"
+        @click="parserEngine = 'rule'"
+      >规则引擎</button>
+      <button
+        class="engine-btn"
+        :class="{ active: parserEngine === 'ai' }"
+        @click="parserEngine = 'ai'"
+      >AI 识别</button>
+      <span class="engine-hint" v-if="parserEngine === 'ai' && !hasApiKey">需要配置 API Key</span>
+      <span class="engine-hint ok" v-else-if="parserEngine === 'ai'">GLM-4-Flash 免费</span>
+      <span class="engine-hint ok" v-else>本地解析，无需联网</span>
+    </div>
+
+    <!-- API Key 配置提示 -->
+    <div v-if="!questionsDoc && !parsed && parserEngine === 'ai' && !hasApiKey" class="apikey-notice">
+      <span class="apikey-icon">🔑</span>
+      <div>
+        <strong>使用 AI 识别需要智谱 API Key（免费）</strong>
+        <p>1. 访问 <a href="https://open.bigmodel.cn/" target="_blank">open.bigmodel.cn</a> 注册<br>2. 在 API 密钥页面复制 Key<br>3. 在下方输入框中粘贴</p>
+      </div>
+      <div class="apikey-input-row">
+        <input v-model="apiKeyInput" type="password" placeholder="粘贴 API Key" class="apikey-input" @keyup.enter="saveApiKey" />
+        <button class="btn btn-small" @click="saveApiKey" :disabled="!apiKeyInput.trim()">保存</button>
+      </div>
+    </div>
+
     <!-- ========= 单文档模式 ========= -->
     <template v-if="uploadMode === 'single'">
       <!-- Step 1: 上传区 -->
@@ -64,8 +95,14 @@
       <!-- 解析中 / 错误 -->
       <div v-if="parsing" class="parsing-section">
         <div class="loading-spinner"></div>
-        <p>正在解析文档…</p>
-        <p class="parsing-sub">正在提取文本并识别题目格式</p>
+        <template v-if="parserEngine === 'ai'">
+          <p>AI 正在识别题目…</p>
+          <p class="parsing-sub">调用智谱 GLM-4-Flash，可能需要 10-30 秒</p>
+        </template>
+        <template v-else>
+          <p>正在解析文档…</p>
+          <p class="parsing-sub">正在提取文本并识别题目格式</p>
+        </template>
       </div>
 
       <div v-if="parseError" class="error-section">
@@ -104,8 +141,14 @@
       <!-- 题目解析中 -->
       <div v-if="parsingQ" class="parsing-section">
         <div class="loading-spinner"></div>
-        <p>正在解析题目文档…</p>
-        <p class="parsing-sub">提取题干、选项信息</p>
+        <template v-if="parserEngine === 'ai'">
+          <p>AI 正在识别题目…</p>
+          <p class="parsing-sub">调用智谱 GLM-4-Flash，可能需要 10-30 秒</p>
+        </template>
+        <template v-else>
+          <p>正在解析题目文档…</p>
+          <p class="parsing-sub">提取题干、选项信息</p>
+        </template>
       </div>
 
       <!-- Phase 2: 上传答案文档 -->
@@ -257,11 +300,39 @@ import { ref, computed } from 'vue'
 import { parseDocxFile, parsePdfFile, parseQuestionsFromLines, parseAnswersFromLines, matchAnswersToQuestions, extractTextFromDocx, parseBilingualLines } from '../utils/docParser.js'
 import { extractTextFromPdf } from '../utils/pdfParser.js'
 import { saveBank as saveToDB, generateBankId } from '../composables/useBankStorage.js'
+import { parseQuestionsWithAI } from '../utils/aiParser.js'
 
 const emit = defineEmits(['go-home', 'bank-added'])
 
 // 模式
 const uploadMode = ref('single')
+
+// 解析引擎
+const parserEngine = ref('rule') // 'rule' | 'ai'
+const apiKeyInput = ref('')
+const hasApiKey = ref(false)
+
+// 尝试从 localStorage 加载已保存的 API Key
+try {
+  const saved = localStorage.getItem('quiz_ai_apikey')
+  if (saved) {
+    apiKeyInput.value = saved
+    hasApiKey.value = true
+  }
+} catch (e) { /* ignore */ }
+
+function saveApiKey() {
+  const key = apiKeyInput.value.trim()
+  if (!key) return
+  try {
+    localStorage.setItem('quiz_ai_apikey', key)
+    hasApiKey.value = true
+    // 动态注入到 aiParser 模块
+    window.__QUIZ_AI_API_KEY = key
+  } catch (e) {
+    alert('保存失败：' + e.message)
+  }
+}
 
 // 单文档状态
 const dragging = ref(false)
@@ -306,15 +377,48 @@ function handleDrop(e) { dragging.value = false; const file = e.dataTransfer.fil
 
 async function processFileSingle(file) {
   if (!isSupported(file)) { parseError.value = '仅支持 .docx 和 .pdf 格式'; return }
+
+  // AI 模式需检查 Key
+  if (parserEngine.value === 'ai' && !hasApiKey.value) {
+    parseError.value = '请先配置智谱 API Key（免费注册即可获取）'
+    return
+  }
+
   parsing.value = true; parseError.value = ''
   try {
     const name = file.name.replace(/\.\w+$/, '')
-    const result = isPdf(file) ? await parsePdfFile(file, name) : await parseDocxFile(file, name)
-    questions.value = result.questions
-    stats.value = result.stats
-    bankName.value = result.meta.name
-    bilingual.value = result.meta.bilingual || false
-    matchWarnings.value = []
+
+    if (parserEngine.value === 'ai') {
+      // AI 识别流程
+      const lines = isPdf(file) ? await extractTextFromPdf(file) : await extractTextFromDocx(file)
+      const text = lines.join('\n')
+      const aiResult = await parseQuestionsWithAI(text)
+      if (aiResult.length === 0) {
+        throw new Error('AI 未检测到题目，请确认文档包含题目内容')
+      }
+      questions.value = aiResult.map(q => ({
+        q: q.q || '',
+        type: q.type || 'single',
+        answer: q.answer || '?',
+        options: (q.options || []).map(o => typeof o === 'string' ? o : o.text || ''),
+        category: q.category || '综合',
+        explain: q.explain || '',
+        bilingual: false
+      }))
+      bankName.value = name
+      bilingual.value = false
+      matchWarnings.value = []
+    } else {
+      // 规则引擎（原有逻辑）
+      const result = isPdf(file) ? await parsePdfFile(file, name) : await parseDocxFile(file, name)
+      questions.value = result.questions
+      stats.value = result.stats
+      bankName.value = result.meta.name
+      bilingual.value = result.meta.bilingual || false
+      matchWarnings.value = []
+    }
+
+    buildStats()
     parsed.value = true
   } catch (e) {
     parseError.value = e.message || '解析失败'
@@ -339,22 +443,49 @@ function handleQuestionsDrop(e) {
 
 async function processQuestionsFile(file) {
   if (!isSupported(file)) { parseError.value = '仅支持 .docx 和 .pdf 格式'; return }
+
+  if (parserEngine.value === 'ai' && !hasApiKey.value) {
+    parseError.value = '请先配置智谱 API Key（免费注册即可获取）'
+    return
+  }
+
   parsingQ.value = true; parseError.value = ''
   try {
     const lines = isPdf(file) ? await extractTextFromPdf(file) : await extractTextFromDocx(file)
-    // 优先尝试双语解析
-    const bilingualResult = parseBilingualLines(lines)
-    if (bilingualResult.bilingual && bilingualResult.questions.length > 0) {
-      questionsDoc.value = bilingualResult.questions
-      bilingual.value = true
-    } else {
-      const result = parseQuestionsFromLines(lines, { requireAnswers: false })
-      if (result.questions.length === 0) {
-        throw new Error('未检测到题目格式。\n请确保文档中每题以数字编号（如 "1."）开头。')
+
+    if (parserEngine.value === 'ai') {
+      // AI 识别流程
+      const text = lines.join('\n')
+      const aiResult = await parseQuestionsWithAI(text)
+      if (aiResult.length === 0) {
+        throw new Error('AI 未检测到题目，请确认文档包含题目内容')
       }
-      questionsDoc.value = result.questions
+      questionsDoc.value = aiResult.map(q => ({
+        q: q.q || '',
+        type: q.type || 'single',
+        answer: q.answer || '?',
+        options: (q.options || []).map(o => typeof o === 'string' ? o : o.text || ''),
+        category: q.category || '综合',
+        explain: q.explain || '',
+        bilingual: false
+      }))
       bilingual.value = false
+    } else {
+      // 规则引擎（原有逻辑）
+      const bilingualResult = parseBilingualLines(lines)
+      if (bilingualResult.bilingual && bilingualResult.questions.length > 0) {
+        questionsDoc.value = bilingualResult.questions
+        bilingual.value = true
+      } else {
+        const result = parseQuestionsFromLines(lines, { requireAnswers: false })
+        if (result.questions.length === 0) {
+          throw new Error('未检测到题目格式。\n请确保文档中每题以数字编号（如 "1."）开头。')
+        }
+        questionsDoc.value = result.questions
+        bilingual.value = false
+      }
     }
+
     bankName.value = file.name.replace(/\.\w+$/, '')
     dualPhase.value = 'answers'
   } catch (e) {
@@ -514,6 +645,45 @@ async function saveBank() {
 .mode-btn.active .mode-icon { background: #0d5a4a; }
 .mode-label { font-size: 15px; font-weight: 600; color: #333; }
 .mode-desc { font-size: 11px; color: #999; }
+
+/* 解析引擎选择 */
+.engine-selector {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  margin-bottom: 20px;
+}
+.engine-label { font-size: 12px; color: #888; font-weight: 500; }
+.engine-btn {
+  padding: 6px 16px; border: 2px solid #e0e0e0; border-radius: 20px;
+  background: #fff; font-size: 12px; font-weight: 600; color: #666;
+  cursor: pointer; transition: all 0.2s;
+}
+.engine-btn:hover { border-color: #1a6b5a; color: #1a6b5a; }
+.engine-btn.active { border-color: #1a6b5a; background: #1a6b5a; color: #fff; }
+.engine-hint { font-size: 11px; color: #c53030; margin-left: 4px; }
+.engine-hint.ok { color: #0d7c51; }
+
+/* API Key 提示 */
+.apikey-notice {
+  display: flex; align-items: flex-start; gap: 12px;
+  margin-bottom: 20px; padding: 14px 16px;
+  background: #fef9e7; border: 1px solid #f0c859; border-radius: 10px;
+}
+.apikey-icon { font-size: 20px; flex-shrink: 0; }
+.apikey-notice strong { display: block; font-size: 13px; color: #854f0b; margin-bottom: 4px; }
+.apikey-notice p { font-size: 11px; color: #666; margin: 0; line-height: 1.6; }
+.apikey-notice a { color: #1a6b5a; }
+.apikey-input-row { display: flex; gap: 6px; margin-top: 8px; flex-shrink: 0; }
+.apikey-input {
+  padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px;
+  font-size: 12px; width: 200px; outline: none;
+}
+.apikey-input:focus { border-color: #1a6b5a; }
+.btn-small {
+  padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 600;
+  cursor: pointer; border: none; background: #1a6b5a; color: #fff;
+}
+.btn-small:hover { background: #155a4a; }
+.btn-small:disabled { background: #ccc; cursor: not-allowed; }
 
 /* 步骤指示器 */
 .phase-steps { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 16px; }
