@@ -92,6 +92,16 @@
         </div>
       </div>
 
+      <!-- 文档大小警告 -->
+      <div v-if="sizeWarning && !parsed && !parseError" class="size-warning">
+        <span class="size-warn-icon">📄</span>
+        <div class="size-warn-body">
+          <strong>{{ sizeWarning }}</strong>
+          <p>解析时间可能较长，且超出部分内容可能被截断。建议将文档拆分为多个小文件后分别上传。</p>
+        </div>
+        <button class="btn btn-secondary btn-small" @click="clearSizeWarning">我知道了</button>
+      </div>
+
       <!-- 解析中 / 错误 -->
       <div v-if="parsing" class="parsing-section">
         <div class="loading-spinner"></div>
@@ -139,6 +149,17 @@
       </div>
 
       <!-- 题目解析中 -->
+
+      <!-- 文档大小警告 -->
+      <div v-if="sizeWarning && !parsed && !parseError && dualPhase === 'questions'" class="size-warning">
+        <span class="size-warn-icon">📄</span>
+        <div class="size-warn-body">
+          <strong>{{ sizeWarning }}</strong>
+          <p>解析时间可能较长，且超出部分内容可能被截断。建议将文档拆分为多个小文件后分别上传。</p>
+        </div>
+        <button class="btn btn-secondary btn-small" @click="clearSizeWarning">我知道了</button>
+      </div>
+
       <div v-if="parsingQ" class="parsing-section">
         <div class="loading-spinner"></div>
         <template v-if="parserEngine === 'ai'">
@@ -304,6 +325,11 @@ import { parseQuestionsWithAI, parseQuestionsWithAIBatched } from '../utils/aiPa
 
 const emit = defineEmits(['go-home', 'bank-added'])
 
+// ──── 文档大小限制 ────
+const AI_WARN_CHARS = 15000   // 超过此值触发分段警告
+const AI_MAX_CHARS = 60000    // AI 模式硬上限，超出拒绝处理
+const RULE_WARN_CHARS = 200000 // 规则引擎大文件提醒
+
 // 模式
 const uploadMode = ref('single')
 
@@ -361,6 +387,9 @@ const matchWarnings = ref([])
 const showWarnings = ref(false)
 const bilingual = ref(false)
 
+// 文档大小警告
+const sizeWarning = ref('')
+
 // 编辑
 const editingIdx = ref(-1)
 const editForm = ref({})
@@ -369,6 +398,16 @@ const editForm = ref({})
 function isDocx(file) { return file.name.toLowerCase().endsWith('.docx') }
 function isPdf(file)  { return file.name.toLowerCase().endsWith('.pdf') }
 function isSupported(file) { return isDocx(file) || isPdf(file) }
+
+// ──── 辅助函数 ────
+function formatCharCount(chars) {
+  if (chars >= 1000) return `${(chars / 1000).toFixed(1)}K 字符`
+  return `${chars} 字符`
+}
+
+function clearSizeWarning() {
+  sizeWarning.value = ''
+}
 
 // ──── 单文档模式 ────
 function triggerFileInput() { fileInput.value?.click() }
@@ -392,8 +431,22 @@ async function processFileSingle(file) {
       // AI 识别流程
       const lines = isPdf(file) ? await extractTextFromPdf(file) : await extractTextFromDocx(file)
       const text = lines.join('\n')
-      // 大文本自动分批处理
-      const isLarge = text.length > 15000
+
+      // 大小检查：超出硬上限直接拒绝
+      if (text.length > AI_MAX_CHARS) {
+        throw new Error(
+          `文档过大，超出 AI 处理上限。\n` +
+          `当前文档：${formatCharCount(text.length)}，上限：${formatCharCount(AI_MAX_CHARS)}。\n` +
+          `请将文档拆分为多个小文件后分别上传，或切换到「规则引擎」模式。`
+        )
+      }
+
+      // 大文本警告 + 自动分批处理
+      if (text.length > AI_WARN_CHARS) {
+        sizeWarning.value = `文档较大（${formatCharCount(text.length)}），超出 AI 单次处理上限，将自动切换为分段解析。`
+      }
+
+      const isLarge = text.length > AI_WARN_CHARS
       const aiResult = isLarge ? await parseQuestionsWithAIBatched(text) : await parseQuestionsWithAI(text)
       if (aiResult.length === 0) {
         throw new Error('AI 未检测到题目，请确认文档包含题目内容')
@@ -413,6 +466,11 @@ async function processFileSingle(file) {
     } else {
       // 规则引擎（原有逻辑）
       const result = isPdf(file) ? await parsePdfFile(file, name) : await parseDocxFile(file, name)
+
+      // 大文件提醒
+      if (result.questions.length > 500) {
+        sizeWarning.value = `题库较大（${result.questions.length} 题），本地解析虽无上限，但刷题时加载可能较慢。`
+      }
       questions.value = result.questions
       stats.value = result.stats
       bankName.value = result.meta.name
@@ -458,8 +516,22 @@ async function processQuestionsFile(file) {
     if (parserEngine.value === 'ai') {
       // AI 识别流程
       const text = lines.join('\n')
-      // 大文本自动分批处理
-      const isLarge = text.length > 15000
+
+      // 大小检查：超出硬上限直接拒绝
+      if (text.length > AI_MAX_CHARS) {
+        throw new Error(
+          `文档过大，超出 AI 处理上限。\n` +
+          `当前文档：${formatCharCount(text.length)}，上限：${formatCharCount(AI_MAX_CHARS)}。\n` +
+          `请将文档拆分为多个小文件后分别上传，或切换到「规则引擎」模式。`
+        )
+      }
+
+      // 大文本警告 + 自动分批处理
+      if (text.length > AI_WARN_CHARS) {
+        sizeWarning.value = `文档较大（${formatCharCount(text.length)}），超出 AI 单次处理上限，将自动切换为分段解析。`
+      }
+
+      const isLarge = text.length > AI_WARN_CHARS
       const aiResult = isLarge ? await parseQuestionsWithAIBatched(text) : await parseQuestionsWithAI(text)
       if (aiResult.length === 0) {
         throw new Error('AI 未检测到题目，请确认文档包含题目内容')
@@ -599,6 +671,7 @@ function resetUpload() {
   matchWarnings.value = []
   showWarnings.value = false
   bilingual.value = false
+  sizeWarning.value = ''
   if (fileInput.value) fileInput.value.value = ''
   if (qFileInput.value) qFileInput.value.value = ''
   if (aFileInput.value) aFileInput.value.value = ''
@@ -756,6 +829,18 @@ async function saveBank() {
 
 /* 匹配警告 */
 .match-warnings { margin-bottom: 14px; border: 1px solid #f0c859; border-radius: 10px; overflow: hidden; }
+
+/* 文档大小警告 */
+.size-warning {
+  display: flex; align-items: flex-start; gap: 12px;
+  margin-top: 16px; padding: 14px 16px;
+  background: #fef9e7; border: 1px solid #f0c859; border-radius: 10px;
+}
+.size-warn-icon { font-size: 20px; flex-shrink: 0; line-height: 1.4; }
+.size-warn-body { flex: 1; }
+.size-warn-body strong { display: block; font-size: 13px; color: #854f0b; margin-bottom: 4px; }
+.size-warn-body p { font-size: 11px; color: #888; margin: 0; line-height: 1.5; }
+.size-warning .btn-small { flex-shrink: 0; align-self: center; }
 .warn-header {
   display: flex; align-items: center; gap: 8px; padding: 10px 14px;
   background: #fef9e7; font-size: 13px; color: #854f0b; font-weight: 600;
