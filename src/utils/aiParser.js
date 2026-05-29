@@ -10,7 +10,7 @@
  *   3. 在 UploadPage 中选择 "AI 识别" 模式
  */
 
-const API_KEY = '' // ← 填入智谱 API Key（免费注册即可获取）
+const API_KEY = '386bde222b534cadb234f90f609dc488.Mz69dSXGhIOkAVxC'
 const API_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
 const MODEL = 'glm-4-flash'
 
