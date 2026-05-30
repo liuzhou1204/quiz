@@ -253,6 +253,13 @@ export function parseAnswersFromLines(lines) {
   const warnings = []
 
   for (const line of lines) {
+    // ── 新增：清晖解析格式 "N.解析：X 是参考答案。..." ──
+    const jxMatch = line.match(/^(\d+)[.\s]*解析[：:]\s*([A-D])\s*是参考答案/)
+    if (jxMatch) {
+      answers.push({ num: parseInt(jxMatch[1]), raw: jxMatch[2] })
+      continue
+    }
+
     // 尝试批量格式：1-5 BABDC
     const batchMatch = line.match(/^(\d+)\s*[-–—]\s*(\d+)\s+(.+)/)
     if (batchMatch) {
@@ -377,15 +384,60 @@ function cjkRatio(text) {
 }
 
 /**
+ * 探测题目实际起始行：跳过前言/注意事项区域
+ * 策略：
+ *   1. 寻找第一对「同题号、一英一中」的区块（允许中间有其他行）
+ *   2. 退而求其次：找第一行以 "1." + 英文字母开头的行
+ */
+function findQuestionSectionStart(lines) {
+  const numPat = /^(\d{1,3})[.、)\s]/
+  const hasCN = (s) => /[\u4e00-\u9fff]/.test(s)
+
+  // 方法1：扫描所有题号行，如果同一题号出现在多个地方（且一英一中），
+  // 取最早的英文版位置
+  const numPositions = {} // num → [idx, ...]
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(numPat)
+    if (!m) continue
+    const num = parseInt(m[1])
+    if (!numPositions[num]) numPositions[num] = []
+    numPositions[num].push(i)
+  }
+
+  // 找到 Q1 的英文版（第一次出现、不含中文）
+  if (numPositions[1] && numPositions[1].length >= 2) {
+    for (const idx of numPositions[1]) {
+      const line = lines[idx]
+      // 英文版 Q1：不含中文，且含英文单词
+      if (!hasCN(line) && /[A-Za-z]{3,}/.test(line)) {
+        return idx
+      }
+    }
+  }
+
+  // 方法2：找第一行以 "1." 或 "1、" 开头 + 英文字母
+  for (let i = 0; i < lines.length; i++) {
+    if (/^1[.、]\s+[A-Za-z]/.test(lines[i])) return i
+  }
+
+  return 0
+}
+
+/**
  * 从文本行提取原始题目区块（stem + options）
  */
 function extractBlocks(lines) {
   const blocks = []
+
+  // 跳过前言/注意事项：找到真正题目开始的位置
+  const startIdx = findQuestionSectionStart(lines)
+  const workLines = startIdx > 0 ? lines.slice(startIdx) : lines
+
   let i = 0
-  const n = lines.length
+  const n = workLines.length
 
   while (i < n) {
-    const line = lines[i]
+    const line = workLines[i]
     const numMatch = line.match(/^(\d{1,3})[.、)\s]/)
     if (!numMatch) { i++; continue }
 
@@ -395,11 +447,11 @@ function extractBlocks(lines) {
 
     // 收集区块行，直到下一个题号或 EOF
     while (i < n) {
-      if (/^\d{1,3}[.、)\s]/.test(lines[i])) break
+      if (/^\d{1,3}[.、)\s]/.test(workLines[i])) break
       i++
     }
 
-    const blockLines = lines.slice(blockStart, i)
+    const blockLines = workLines.slice(blockStart, i)
     const { stem, options } = extractBlockContent(blockLines)
 
     if (stem) {
