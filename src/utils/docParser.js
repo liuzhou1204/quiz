@@ -252,13 +252,21 @@ export function parseAnswersFromLines(lines) {
   const answers = []
   const warnings = []
 
+  // 检测是否为清晖解析格式（整个文档以 "N.解析：" 开头的行为主）
+  // 如果是，只提取 JX 格式，忽略其余行（避免说明文字中的数字被误识别）
+  const isJiaoxie = lines.some(l => /^\d+[.．\s]*解析[：:]/.test(l))
+
   for (const line of lines) {
-    // ── 新增：清晖解析格式 "N.解析：X 是参考答案。..." ──
-    const jxMatch = line.match(/^(\d+)[.\s]*解析[：:]\s*([A-D])\s*是参考答案/)
+    // ── 清晖解析格式 "N.解析：X 是参考答案。..." ──
+    // 兼容：全角句号 ．/ 缺少冒号 / 重复"解析："
+    const jxMatch = line.match(/^(\d+)[.．\s]*解析[：:]?(?:解析[：:])?\s*([A-D])\s*是参考答案/)
     if (jxMatch) {
       answers.push({ num: parseInt(jxMatch[1]), raw: jxMatch[2] })
       continue
     }
+
+    // 如果是清晖解析文档，只提取 JX 格式，其余行直接跳过
+    if (isJiaoxie) continue
 
     // 尝试批量格式：1-5 BABDC
     const batchMatch = line.match(/^(\d+)\s*[-–—]\s*(\d+)\s+(.+)/)
