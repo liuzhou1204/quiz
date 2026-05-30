@@ -40,7 +40,9 @@ export async function saveBank(bankData) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite')
     const store = tx.objectStore(STORE_NAME)
-    store.put(bankData)
+    // 用 JSON 深拷贝去除 Vue Proxy 等不可克隆的属性
+    const clean = JSON.parse(JSON.stringify(bankData))
+    store.put(clean)
     tx.oncomplete = () => { db.close(); resolve() }
     tx.onerror = () => { db.close(); reject(tx.error) }
   })
