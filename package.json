@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && cp -r dist/. docs/",
     "preview": "vite preview"
   },
   "dependencies": {
+    "gh": "^2.8.9",
     "mammoth": "^1.12.0",
     "vue": "^3.5.13"
   },
