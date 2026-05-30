@@ -73,11 +73,11 @@
           <h4>支持的题目格式</h4>
           <div class="format-examples">
             <div class="format-item">
-              <span class="format-badge single">单选</span>
+              <span class="format-badge single">标准单选</span>
               <code>1. 题干内容<br>A. 选项A<br>B. 选项B<br>C. 选项C<br>D. 选项D<br>答案: B</code>
             </div>
             <div class="format-item">
-              <span class="format-badge multi">多选</span>
+              <span class="format-badge multi">标准多选</span>
               <code>2. 以下哪些是正确的<br>A. 选项A<br>B. 选项B<br>C. 选项C<br>答案: A,B,C</code>
             </div>
             <div class="format-item">
@@ -87,6 +87,11 @@
             <div class="format-item">
               <span class="format-badge fill">填空</span>
               <code>4. 题干____内容<br>答案: 关键词</code>
+            </div>
+            <div class="format-item" style="grid-column: 1 / -1">
+              <span class="format-badge" style="background:#ede9fe;color:#6d28d9">AI 模式</span>
+              <span style="font-size:11px;color:#888;margin-left:4px">无题号 / 答案嵌入题干（如"属于（C）""（多选）"）</span>
+              <code style="margin-top:4px">题干内容属于（C）<br>A. 选项A  B. 选项B  C. 选项C  D. 选项D<br>题干正确的是（B、C）（多选）<br>A. 选项A  B. 选项B  C. 选项C</code>
             </div>
           </div>
         </div>
@@ -463,6 +468,19 @@ async function processFileSingle(file) {
       // 规则引擎（原有逻辑）
       const result = isPdf(file) ? await parsePdfFile(file, name) : await parseDocxFile(file, name)
 
+      // 规则引擎解析不到题目时，检查是否为无题号+嵌入式答案格式
+      if (result.questions.length === 0) {
+        const lines = isPdf(file) ? await extractTextFromPdf(file) : await extractTextFromDocx(file)
+        const hasEmbeddedAnswer = lines.some(l => /（[A-D](?:[、,][A-D])*）/.test(l))
+        if (hasEmbeddedAnswer) {
+          throw new Error(
+            '检测到\"无题号+答案嵌入题干\"格式（如\"属于（C）\"\"正确的是（B、C）（多选）\"），规则引擎无法解析。\n' +
+            '请切换到\"AI 识别\"模式重试。'
+          )
+        }
+        throw new Error('未检测到题目格式。\n请确认文档格式是否正确，或切换到"AI 识别"模式。')
+      }
+
       // 大文件提醒
       if (result.questions.length > 500) {
         sizeWarning.value = `题库较大（${result.questions.length} 题），本地解析虽无上限，但刷题时加载可能较慢。`
@@ -547,7 +565,14 @@ async function processQuestionsFile(file) {
       } else {
         const result = parseQuestionsFromLines(lines, { requireAnswers: false })
         if (result.questions.length === 0) {
-          throw new Error('未检测到题目格式。\n请确保文档中每题以数字编号（如 "1."）开头。')
+          const hasEmbeddedAnswer = lines.some(l => /（[A-D](?:[、,][A-D])*）/.test(l))
+          if (hasEmbeddedAnswer) {
+            throw new Error(
+              '检测到\"无题号+答案嵌入题干\"格式（如\"属于（C）\"\"正确的是（B、C）（多选）\"），规则引擎无法解析。\n' +
+              '请切换到\"AI 识别\"模式重试。'
+            )
+          }
+          throw new Error('未检测到题目格式。\n请确保文档中每题以数字编号（如 "1."）开头，或切换到"AI 识别"模式。')
         }
         questionsDoc.value = result.questions
         bilingual.value = false
