@@ -56,20 +56,20 @@ const SYSTEM_PROMPT = `你是一个专业的题库解析专家。你的任务是
 
 /**
  * 调用智谱 AI 解析题目
- * @param {string} text - 文档全文
+ * @param {string} text - 文档全文（任意大小，调用方负责分批）
+ * @param {Object} [opts] - 可选参数
+ * @param {number} [opts.maxTokens=4096] - 最大输出 token 数
  * @returns {Promise<Array>} 结构化题目数组
  */
-export async function parseQuestionsWithAI(text) {
+export async function parseQuestionsWithAI(text, { maxTokens = 4096 } = {}) {
   const key = API_KEY || (typeof window !== 'undefined' && window.__QUIZ_AI_API_KEY) || ''
   if (!key) {
     throw new Error('未配置 AI API Key。请先在页面中输入智谱 API Key')
   }
 
-  // 文本过长时截断（GLM-4-Flash 上下文 128K，这里限制 60K 字符以保证稳定）
-  const maxChars = 60000
-  const truncated = text.length > maxChars
-    ? text.slice(0, maxChars) + '\n\n[文本过长已截断，共省略约 ' + Math.round((text.length - maxChars) / 1000) + 'k 字符]'
-    : text
+  // 不再截断文本 —— 超出上下文窗口的请求由 API 返回错误，
+  // 调用方应使用 parseQuestionsWithAIBatched 分批处理大文档。
+  const truncated = text
 
   const response = await fetch(API_URL, {
     method: 'POST',
@@ -84,7 +84,7 @@ export async function parseQuestionsWithAI(text) {
         { role: 'user', content: `请从以下文档中提取所有题目：\n\n${truncated}` }
       ],
       temperature: 0.1,
-      max_tokens: 4096
+      max_tokens: maxTokens
     })
   })
 
@@ -169,22 +169,24 @@ export async function parseQuestionsWithAI(text) {
 
 /**
  * 批量解析（将大文本分段处理，适合超长文档）
+ * 每段独立调用 AI，最后合并结果。
  * @param {string} text - 文档全文
- * @param {number} chunkSize - 每段字符数（默认 30000）
+ * @param {number} [chunkSize=40000] - 每段字符数（GLM-4-Flash 支持 128K 上下文）
+ * @param {number} [maxTokens=8192] - 每段最大输出 token 数
  * @returns {Promise<Array>} 合并后的题目数组
  */
-export async function parseQuestionsWithAIBatched(text, chunkSize = 12000) {
+export async function parseQuestionsWithAIBatched(text, chunkSize = 40000, maxTokens = 8192) {
   if (text.length <= chunkSize) {
-    return parseQuestionsWithAI(text)
+    return parseQuestionsWithAI(text, { maxTokens })
   }
 
-  // 按段落分割，尽量在题目边界处断开
+  // 按段落分割，尽量在双换行处断开
   const chunks = []
   let start = 0
   while (start < text.length) {
     let end = start + chunkSize
     if (end < text.length) {
-      // 向前找最近的换行符
+      // 向前找最近的双换行（段落边界）
       const searchStart = Math.max(start, end - 2000)
       const lastBreak = text.lastIndexOf('\n\n', end)
       if (lastBreak > searchStart) {
@@ -197,9 +199,47 @@ export async function parseQuestionsWithAIBatched(text, chunkSize = 12000) {
 
   const allQuestions = []
   for (let i = 0; i < chunks.length; i++) {
-    const chunkQuestions = await parseQuestionsWithAI(chunks[i])
+    const chunkQuestions = await parseQuestionsWithAI(chunks[i], { maxTokens })
     allQuestions.push(...chunkQuestions)
   }
 
   return allQuestions
+}
+
+/**
+ * 查询智谱账号剩余额度 / 用量（占位口子）
+ *
+ * 当前直接返回 null（不启用）。
+ * 后续接入计费提醒时，取消注释并填入真实 API 调用：
+ *   GET https://open.bigmodel.cn/api/paas/v4/billing/subscription
+ *   Header: Authorization: Bearer <API_KEY>
+ *
+ * @returns {Promise<{ total:number, used:number, remain:number }|null>}
+ */
+export async function fetchAIQuota(apiKey) {
+  // TODO: 取消注释以下代码以启用额度查询
+  // if (!apiKey) return null
+  // try {
+  //   const r = await fetch('https://open.bigmodel.cn/api/paas/v4/billing/subscription', {
+  //     headers: { 'Authorization': `Bearer ${apiKey}` }
+  //   })
+  //   if (!r.ok) return null
+  //   const d = await r.json()
+  //   return { total: d.total, used: d.used, remain: d.total - d.used }
+  // } catch { return null }
+  return null
+}
+
+/**
+ * 根据字符数估算 token 消耗（中文约 1.5~2 字符/token，英文约 4 字符/token）
+ * 用于上传前给用户一个参考值，不保证精确。
+ * @param {string} text
+ * @returns {{ chars:number, estimatedTokens:number, chunks:number }}
+ */
+export function estimateTokenUsage(text, chunkSize = 40000) {
+  const chars = text.length
+  // 中英混合文档，粗略按 2 字符 ≈ 1 token 估算
+  const estimatedTokens = Math.ceil(chars / 2)
+  const chunks = Math.ceil(chars / chunkSize)
+  return { chars, estimatedTokens, chunks }
 }

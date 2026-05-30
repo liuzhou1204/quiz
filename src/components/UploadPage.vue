@@ -33,7 +33,7 @@
         @click="parserEngine = 'ai'"
       >AI 识别</button>
       <span class="engine-hint" v-if="parserEngine === 'ai' && !hasApiKey">需要配置 API Key</span>
-      <span class="engine-hint ok" v-else-if="parserEngine === 'ai'">GLM-4-Flash 免费</span>
+      <span class="engine-hint ok" v-else-if="parserEngine === 'ai'">AI 识别（支持任意大小文档）</span>
       <span class="engine-hint ok" v-else>本地解析，无需联网</span>
     </div>
 
@@ -321,14 +321,14 @@ import { ref, computed } from 'vue'
 import { parseDocxFile, parsePdfFile, parseQuestionsFromLines, parseAnswersFromLines, matchAnswersToQuestions, extractTextFromDocx, parseBilingualLines } from '../utils/docParser.js'
 import { extractTextFromPdf } from '../utils/pdfParser.js'
 import { saveBank as saveToDB, generateBankId } from '../composables/useBankStorage.js'
-import { parseQuestionsWithAI, parseQuestionsWithAIBatched } from '../utils/aiParser.js'
+import { parseQuestionsWithAI, parseQuestionsWithAIBatched, estimateTokenUsage } from '../utils/aiParser.js'
 
 const emit = defineEmits(['go-home', 'bank-added'])
 
-// ──── 文档大小限制 ────
-const AI_WARN_CHARS = 15000   // 超过此值触发分段警告
-const AI_MAX_CHARS = 60000    // AI 模式硬上限，超出拒绝处理
-const RULE_WARN_CHARS = 200000 // 规则引擎大文件提醒
+// ──── 文档大小提醒 ────
+const AI_BATCH_THRESHOLD = 12000   // 超出此值走分批解析
+const AI_COST_WARN_CHARS = 30000    // 超出此值提示 token 消耗
+const RULE_WARN_CHARS = 200000     // 规则引擎大文件提醒
 
 // 模式
 const uploadMode = ref('single')
@@ -432,21 +432,17 @@ async function processFileSingle(file) {
       const lines = isPdf(file) ? await extractTextFromPdf(file) : await extractTextFromDocx(file)
       const text = lines.join('\n')
 
-      // 大小检查：超出硬上限直接拒绝
-      if (text.length > AI_MAX_CHARS) {
-        throw new Error(
-          `文档过大，超出 AI 处理上限。\n` +
-          `当前文档：${formatCharCount(text.length)}，上限：${formatCharCount(AI_MAX_CHARS)}。\n` +
-          `请将文档拆分为多个小文件后分别上传，或切换到「规则引擎」模式。`
-        )
+      // 大文本提示（可能消耗较多 token）
+      if (text.length > AI_COST_WARN_CHARS) {
+        const est = estimateTokenUsage(text)
+        sizeWarning.value =
+          `文档较大（${formatCharCount(text.length)}），预计消耗约 ${est.estimatedTokens.toLocaleString()} tokens（分 ${est.chunks} 批处理）。` +
+          `当前使用 GLM-4-Flash，免费额度内不收费，超出后按量计费。`
+      } else if (text.length > AI_BATCH_THRESHOLD) {
+        sizeWarning.value = `文档较大（${formatCharCount(text.length)}），将自动分批解析以保证完整性。`
       }
 
-      // 大文本警告 + 自动分批处理
-      if (text.length > AI_WARN_CHARS) {
-        sizeWarning.value = `文档较大（${formatCharCount(text.length)}），超出 AI 单次处理上限，将自动切换为分段解析。`
-      }
-
-      const isLarge = text.length > AI_WARN_CHARS
+      const isLarge = text.length > AI_BATCH_THRESHOLD
       const aiResult = isLarge ? await parseQuestionsWithAIBatched(text) : await parseQuestionsWithAI(text)
       if (aiResult.length === 0) {
         throw new Error('AI 未检测到题目，请确认文档包含题目内容')
@@ -517,21 +513,17 @@ async function processQuestionsFile(file) {
       // AI 识别流程
       const text = lines.join('\n')
 
-      // 大小检查：超出硬上限直接拒绝
-      if (text.length > AI_MAX_CHARS) {
-        throw new Error(
-          `文档过大，超出 AI 处理上限。\n` +
-          `当前文档：${formatCharCount(text.length)}，上限：${formatCharCount(AI_MAX_CHARS)}。\n` +
-          `请将文档拆分为多个小文件后分别上传，或切换到「规则引擎」模式。`
-        )
+      // 大文本提示（可能消耗较多 token）
+      if (text.length > AI_COST_WARN_CHARS) {
+        const est = estimateTokenUsage(text)
+        sizeWarning.value =
+          `文档较大（${formatCharCount(text.length)}），预计消耗约 ${est.estimatedTokens.toLocaleString()} tokens（分 ${est.chunks} 批处理）。` +
+          `当前使用 GLM-4-Flash，免费额度内不收费，超出后按量计费。`
+      } else if (text.length > AI_BATCH_THRESHOLD) {
+        sizeWarning.value = `文档较大（${formatCharCount(text.length)}），将自动分批解析以保证完整性。`
       }
 
-      // 大文本警告 + 自动分批处理
-      if (text.length > AI_WARN_CHARS) {
-        sizeWarning.value = `文档较大（${formatCharCount(text.length)}），超出 AI 单次处理上限，将自动切换为分段解析。`
-      }
-
-      const isLarge = text.length > AI_WARN_CHARS
+      const isLarge = text.length > AI_BATCH_THRESHOLD
       const aiResult = isLarge ? await parseQuestionsWithAIBatched(text) : await parseQuestionsWithAI(text)
       if (aiResult.length === 0) {
         throw new Error('AI 未检测到题目，请确认文档包含题目内容')
